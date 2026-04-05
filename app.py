@@ -367,3 +367,26 @@ with tab5:
             dcf_margin = (dcf_value - price) / price * 100
             d2.metric("Margin of Safety", fmt_pct(dcf_margin), delta_color="normal" if dcf_margin > 0 else "inverse")
             d3.metric("Price / DCF", fmt_num(price / dcf_value))
+
+# =============================================================================
+# DOWNLOAD (Your Original Feature)
+# =============================================================================
+st.divider()
+csv = fdf.to_csv(index=False).encode('utf-8')
+st.download_button(
+    label="⬇️ Download Data as CSV",
+    data=csv,
+    file_name="nifty_dashboard_data.csv",
+    mime="text/csv"
+)
+# =============================================================================
+# DOWNLOAD (Your Original Feature)
+# =============================================================================
+st.divider()
+csv = fdf.to_csv(index=False).encode('utf-8')
+st.download_button(
+    label="⬇️ Download Data as CSV",
+    data=csv,
+    file_name="nifty_dashboard_data.csv",
+    mime="text/csv"
+)
