@@ -1,5 +1,5 @@
 # ==========================================================
-# S&P 500 Intelligence Terminal V7.2 (FINAL STABLE)
+# S&P 500 Intelligence Terminal V7.3 (FINAL STABLE)
 # ==========================================================
 import streamlit as st
 import pandas as pd
@@ -19,7 +19,7 @@ LIMIT_TICKERS = 50
 MAX_WORKERS = 4
 BATCH_SIZE = 10
 
-st.set_page_config(layout="wide", page_title="S&P 500 V7.2")
+st.set_page_config(layout="wide", page_title="S&P 500 V7.3")
 
 # ==========================================================
 # HELPERS
@@ -37,7 +37,7 @@ def fmt(x): return f"{x:,.2f}" if pd.notna(x) else "N/A"
 def fmt_pct(x): return f"{x:.1f}%" if pd.notna(x) else "N/A"
 
 # ==========================================================
-# LOAD TICKERS (FIXED 403)
+# LOAD TICKERS (403 SAFE)
 # ==========================================================
 @st.cache_data(ttl=86400)
 def load_sp500():
@@ -56,7 +56,7 @@ def load_sp500():
     return df.head(LIMIT_TICKERS)
 
 # ==========================================================
-# FETCH DATA (BALANCED BATCHING)
+# FETCH DATA (BATCHED + SAFE)
 # ==========================================================
 def get_data(t):
     d = {"Ticker": t}
@@ -95,18 +95,29 @@ def fetch_all(df):
             for f in as_completed(futures):
                 results.append(f.result())
 
-        time.sleep(0.5)  # optimized throttle
+        time.sleep(0.5)
 
     return pd.DataFrame(results)
 
 # ==========================================================
-# SCORING ENGINE (V7 PRO)
+# SCORING ENGINE (ROBUST)
 # ==========================================================
 def add_scores(df):
+    required = ["PE", "PB", "ROE", "FCF_Yield"]
+
+    for col in required:
+        if col not in df.columns:
+            df[col] = None
+
+    df = df[df["Sector"].notna()]
+
     sec = df.groupby("Sector").agg({
-        "PE":"mean","PB":"mean","ROE":"mean","FCF_Yield":"mean"
+        col: "mean" for col in required
     }).rename(columns={
-        "PE":"PE_sec","PB":"PB_sec","ROE":"ROE_sec","FCF_Yield":"FCF_sec"
+        "PE": "PE_sec",
+        "PB": "PB_sec",
+        "ROE": "ROE_sec",
+        "FCF_Yield": "FCF_sec"
     }).reset_index()
 
     df = df.merge(sec, on="Sector", how="left")
@@ -119,10 +130,15 @@ def add_scores(df):
     df["ROE_score"] = df["ROE"].rank(pct=True)
     df["FCF_score"] = df["FCF_Yield"].rank(pct=True)
 
-    df["Value"] = df["PE_score"]*0.5 + df["PB_score"]*0.5
-    df["Quality"] = df["ROE_score"]*0.6 + df["FCF_score"]*0.4
+    df[["PE_score","PB_score","ROE_score","FCF_score"]] = df[
+        ["PE_score","PB_score","ROE_score","FCF_score"]
+    ].fillna(0)
 
-    df["Total_Score"] = (df["Value"]*0.4 + df["Quality"]*0.6)*100
+    df["Value"] = df["PE_score"] * 0.5 + df["PB_score"] * 0.5
+    df["Quality"] = df["ROE_score"] * 0.6 + df["FCF_score"] * 0.4
+
+    df["Total_Score"] = (df["Value"] * 0.4 + df["Quality"] * 0.6) * 100
+
     return df
 
 # ==========================================================
@@ -136,6 +152,7 @@ def graham(eps, bvps):
 def dcf(fcf_yield, mcap, price, g, r, tg):
     if not fcf_yield or not mcap or not price or price <= 0:
         return None
+
     fcf = fcf_yield * mcap
     shares = mcap / price
 
@@ -144,17 +161,24 @@ def dcf(fcf_yield, mcap, price, g, r, tg):
     pv = sum(fcf*(1+g)**yr/(1+r)**yr for yr in range(1, 11))
     tv = (fcf*(1+g)**10*(1+tg))/(r-tg)
     pv += tv/(1+r)**10
+
     return pv/shares
 
 # ==========================================================
 # MAIN
 # ==========================================================
-st.title("📊 S&P 500 Intelligence Terminal V7.2")
+st.title("📊 S&P 500 Intelligence Terminal V7.3")
 
 sp = load_sp500()
 df_raw = fetch_all(sp)
 
 df = pd.merge(df_raw, sp, on="Ticker")
+
+# Ensure required columns exist BEFORE scoring
+for col in ["PE","PB","ROE","FCF_Yield"]:
+    if col not in df.columns:
+        df[col] = None
+
 df = add_scores(df)
 
 st.caption(f"Data completeness: {df['Price'].notna().mean()*100:.1f}%")
@@ -176,32 +200,44 @@ fdf = fdf[(fdf["PE"].isna()) | (fdf["PE"] <= pe_max)]
 # ==========================================================
 tab1, tab2, tab3, tab4 = st.tabs(["📋 Screener","🗺️ Map","📈 Charts","🏦 Deep Dive"])
 
+# TAB 1
 with tab1:
-    st.dataframe(fdf.sort_values("Total_Score", ascending=False), use_container_width=True)
+    st.dataframe(
+        fdf.sort_values("Total_Score", ascending=False),
+        use_container_width=True
+    )
 
+# TAB 2
 with tab2:
-    fig = px.scatter(fdf, x="PE", y="ROE", color="Sector", size="MarketCap")
+    mdf = fdf.dropna(subset=["PE","ROE"])
+    fig = px.scatter(mdf, x="PE", y="ROE", color="Sector", size="MarketCap")
     st.plotly_chart(fig, use_container_width=True)
 
+# TAB 3
 with tab3:
     t = st.selectbox("Stock", fdf["Ticker"])
     hist = yf.download(t, period="1y", progress=False)
     st.line_chart(hist["Close"])
 
+# TAB 4
 with tab4:
     t = st.selectbox("Deep Dive", fdf["Ticker"], key="deep")
     row = fdf[fdf["Ticker"] == t].iloc[0]
 
-    g = graham(row.get("EPS"), row.get("BVPS"))
+    g_val = graham(row.get("EPS"), row.get("BVPS"))
 
-    c1,c2 = st.columns(2)
+    c1, c2 = st.columns(2)
     growth = c1.slider("Growth %", 0, 30, 10)
     discount = c2.slider("Discount %", 5, 20, 10)
     terminal = st.slider("Terminal %", 1, 5, 3)
 
-    d = dcf(row.get("FCF_Yield"), row.get("MarketCap"), row.get("Price"),
-            growth, discount, terminal)
+    d_val = dcf(
+        row.get("FCF_Yield"),
+        row.get("MarketCap"),
+        row.get("Price"),
+        growth, discount, terminal
+    )
 
     st.metric("Price", fmt(row.get("Price")))
-    st.metric("Graham", fmt(g))
-    st.metric("DCF", fmt(d))
+    st.metric("Graham", fmt(g_val))
+    st.metric("DCF", fmt(d_val))
