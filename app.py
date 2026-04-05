@@ -28,14 +28,23 @@ def fmt_num(v, d=1): return f"{v:.{d}f}" if pd.notna(v) and v is not None else "
 def fmt_pct(v, d=1): return f"{v:.{d}f}%" if pd.notna(v) and v is not None else "N/A"
 
 # =============================================================================
-# 1. LOAD S&P 500 FROM WIKIPEDIA (100% Free, Bypasses FMP Paywall)
+# 1. LOAD S&P 500 FROM WIKIPEDIA (With "Human" Headers)
 # =============================================================================
 @st.cache_data(ttl=86400) # Caches for 24 hours
 def load_sp500_tickers() -> pd.DataFrame:
     try:
-        # Scrape the live table directly from Wikipedia
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        tables = pd.read_html(url)
+        
+        # Give our code a "name tag" so Wikipedia thinks it's a real browser
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        # Fetch the webpage text securely
+        html_data = requests.get(url, headers=headers, timeout=10).text
+        
+        # Now let Pandas read the raw HTML text
+        tables = pd.read_html(html_data)
         df = tables[0]
         
         # Rename columns to match our dashboard
