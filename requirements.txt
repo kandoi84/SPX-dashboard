@@ -1,7 +1,6 @@
 streamlit
-yfinance
 pandas
 plotly
 requests
-numpy
 lxml
+yfinance
