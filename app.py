@@ -55,28 +55,86 @@ def fmt_bn(v):
 # =============================================================================
 @st.cache_data(ttl=86400)  # Refresh once a day
 def load_sp500_tickers() -> pd.DataFrame:
-    """Scrape S&P 500 constituents from Wikipedia using a browser user-agent."""
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    """
+    Fetch S&P 500 constituents from Yahoo Finance screener API.
+    Falls back to hardcoded top-50 if API fails.
+    """
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/124.0.0.0 Safari/537.36"
-        )
+        ),
+        "Accept": "application/json",
     }
+
+    # ── Primary: Yahoo Finance SPY holdings screener ─────────────────────────
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        tables = pd.read_html(response.text)
-        df = tables[0]
-        df = df[["Symbol", "Security", "GICS Sector"]].copy()
-        df.columns = ["Ticker", "Name", "Sector"]
-        # Fix symbol differences between Wikipedia and Yahoo Finance
-        df["Ticker"] = df["Ticker"].str.replace(".", "-", regex=False)
-        return df.drop_duplicates(subset="Ticker").reset_index(drop=True)
-    except Exception as e:
-        st.error(f"Could not load S&P 500 list from Wikipedia: {e}")
-        return pd.DataFrame(columns=["Ticker", "Name", "Sector"])
+        url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+        params = {"scrIds": "spy_by_holdings", "count": 600, "formatted": "false"}
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        resp.raise_for_status()
+        quotes = resp.json()["finance"]["result"][0]["quotes"]
+        rows = [{"Ticker": q.get("symbol",""), "Name": q.get("shortName", q.get("symbol","")), "Sector": q.get("sector","Unknown")} for q in quotes if q.get("symbol")]
+        df = pd.DataFrame(rows).drop_duplicates(subset="Ticker").reset_index(drop=True)
+        if not df.empty:
+            return df
+    except Exception:
+        pass
+
+    # ── Fallback: Yahoo Finance large-cap screener ────────────────────────────
+    try:
+        url2 = "https://query2.finance.yahoo.com/v1/finance/screener"
+        params2 = {"formatted": "false", "lang": "en-US", "region": "US"}
+        payload = {
+            "offset": 0, "size": 600,
+            "sortField": "intradaymarketcap", "sortType": "DESC",
+            "quoteType": "EQUITY",
+            "query": {"operator": "AND", "operands": [
+                {"operator": "GT", "operands": ["intradaymarketcap", 10000000000]}
+            ]},
+        }
+        resp2 = requests.post(url2, params=params2, json=payload, headers=headers, timeout=15)
+        resp2.raise_for_status()
+        quotes2 = resp2.json()["finance"]["result"][0]["quotes"]
+        rows2 = [{"Ticker": q.get("symbol",""), "Name": q.get("shortName", q.get("symbol","")), "Sector": q.get("sector","Unknown")} for q in quotes2 if q.get("symbol")]
+        df2 = pd.DataFrame(rows2).drop_duplicates(subset="Ticker").reset_index(drop=True)
+        if not df2.empty:
+            st.warning("Loaded large-cap US stocks (fallback — may not be exact S&P 500 list).")
+            return df2
+    except Exception:
+        pass
+
+    # ── Final fallback: hardcoded top 50 ─────────────────────────────────────
+    st.warning("Could not fetch live list — using top 50 fallback.")
+    fallback = [
+        ("AAPL","Apple Inc.","Technology"),("MSFT","Microsoft","Technology"),
+        ("NVDA","NVIDIA","Technology"),("AMZN","Amazon","Consumer Cyclical"),
+        ("GOOGL","Alphabet A","Communication"),("GOOG","Alphabet C","Communication"),
+        ("META","Meta Platforms","Communication"),("TSLA","Tesla","Consumer Cyclical"),
+        ("BRK-B","Berkshire Hathaway","Financials"),("JPM","JPMorgan Chase","Financials"),
+        ("LLY","Eli Lilly","Healthcare"),("V","Visa","Financials"),
+        ("UNH","UnitedHealth","Healthcare"),("XOM","Exxon Mobil","Energy"),
+        ("MA","Mastercard","Financials"),("JNJ","Johnson & Johnson","Healthcare"),
+        ("PG","Procter & Gamble","Consumer Defensive"),("HD","Home Depot","Consumer Cyclical"),
+        ("AVGO","Broadcom","Technology"),("MRK","Merck","Healthcare"),
+        ("COST","Costco","Consumer Defensive"),("ABBV","AbbVie","Healthcare"),
+        ("CVX","Chevron","Energy"),("CRM","Salesforce","Technology"),
+        ("BAC","Bank of America","Financials"),("NFLX","Netflix","Communication"),
+        ("AMD","Advanced Micro Devices","Technology"),("PEP","PepsiCo","Consumer Defensive"),
+        ("TMO","Thermo Fisher","Healthcare"),("ADBE","Adobe","Technology"),
+        ("KO","Coca-Cola","Consumer Defensive"),("WMT","Walmart","Consumer Defensive"),
+        ("MCD","McDonald's","Consumer Cyclical"),("CSCO","Cisco","Technology"),
+        ("ACN","Accenture","Technology"),("ABT","Abbott","Healthcare"),
+        ("ORCL","Oracle","Technology"),("LIN","Linde","Basic Materials"),
+        ("INTC","Intel","Technology"),("DHR","Danaher","Healthcare"),
+        ("TXN","Texas Instruments","Technology"),("NEE","NextEra Energy","Utilities"),
+        ("PM","Philip Morris","Consumer Defensive"),("RTX","Raytheon","Industrials"),
+        ("UPS","UPS","Industrials"),("HON","Honeywell","Industrials"),
+        ("INTU","Intuit","Technology"),("AMGN","Amgen","Healthcare"),
+        ("LOW","Lowe's","Consumer Cyclical"),("IBM","IBM","Technology"),
+    ]
+    return pd.DataFrame(fallback, columns=["Ticker", "Name", "Sector"])
 
 # =============================================================================
 # FETCH SINGLE TICKER
@@ -223,7 +281,7 @@ def simple_dcf(fcf, growth_rate, terminal_growth, discount_rate, years, shares):
 # MAIN
 # =============================================================================
 st.title("🇺🇸 S&P 500 Intelligence Dashboard")
-st.caption(f"Free-data edition · Wikipedia + yfinance · Risk-free rate: {US_RISK_FREE_RATE}% (10Y Treasury)")
+st.caption(f"Free-data edition · Yahoo Finance + yfinance · Risk-free rate: {US_RISK_FREE_RATE}% (10Y Treasury)")
 
 # Load tickers
 sp500_df = load_sp500_tickers()
@@ -231,7 +289,7 @@ if sp500_df.empty:
     st.error("Could not load S&P 500 tickers.")
     st.stop()
 
-st.info(f"Loaded **{len(sp500_df)} S&P 500 constituents** from Wikipedia. Fetching financials...")
+st.info(f"Loaded **{len(sp500_df)} S&P 500 constituents** from Yahoo Finance. Fetching financials...")
 
 with st.spinner("Fetching market data in parallel — this takes ~2–3 min for all 500 stocks..."):
     df = fetch_all(sp500_df)
