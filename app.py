@@ -10,7 +10,7 @@ import io
 # CONFIG & API
 # =============================================================================
 # ⚠️ PASTE YOUR BRAND NEW API KEY HERE ⚠️
-FMP_API_KEY          = "YOUR_NEW_API_KEY_HERE" 
+FMP_API_KEY          = "1eA8Evcu6mUTfbv2CuV4fdlBBzAQ599j" 
 
 US_RISK_FREE_RATE    = 4.3    
 DCF_DEFAULT_GROWTH   = 10.0
@@ -55,52 +55,46 @@ def load_sp500_tickers() -> pd.DataFrame:
         st.stop()
 
 # =============================================================================
-# 2. MASTER DATA ENGINE (Fast & Reliable)
+# 2. MASTER DATA ENGINE (Fast, Reliable, One-by-One to bypass FMP restrictions)
 # =============================================================================
 @st.cache_data(ttl=86400)
 def fetch_all_data(sp500_df: pd.DataFrame) -> pd.DataFrame:
     tickers = sp500_df["Ticker"].tolist()
     
-    # BATCH FETCH QUOTES
-    quote_results = []
-    batch_size = 50  # We will ask FMP for 50 at a time
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i+batch_size]
-        symbols = ",".join(batch)
-        url = f"https://financialmodelingprep.com/api/v3/quote/{symbols}?apikey={FMP_API_KEY}"
-        try:
-            resp = requests.get(url, timeout=10).json()
-            
-            # THE SNIFFER: If FMP sends an error message instead of data, print it to the screen!
-            if isinstance(resp, dict) and "Error Message" in resp:
-                st.error(f"FMP API Blocked us at Quotes! Reason: {resp['Error Message']}")
-                st.stop()
-                
-            if isinstance(resp, list):
-                quote_results.extend(resp)
-        except Exception as e: 
-            st.error(f"Network crash on Quotes: {e}")
-            st.stop()
-        
-    df_quotes = pd.DataFrame(quote_results)
-    if df_quotes.empty: 
-        st.error("Quote dataframe is entirely empty. FMP returned nothing.")
-        return pd.DataFrame()
-
-    # DEEP METRICS FETCH
-    metric_results = []
+    combined_results = []
     progress = st.progress(0)
     status = st.empty()
     done = 0
     
-    def get_metrics(t):
+    # This function grabs everything for a SINGLE stock at once
+    def get_stock_data(t):
+        data = {"Ticker": t}
         try:
+            # 1. Fetch Quote (Price, 52W High/Low, EPS, PE, Market Cap)
+            q_url = f"https://financialmodelingprep.com/api/v3/quote/{t}?apikey={FMP_API_KEY}"
+            q_res = requests.get(q_url, timeout=5).json()
+            
+            # If FMP sends an error for this specific stock, skip it cleanly
+            if isinstance(q_res, dict) and "Error Message" in q_res:
+                return data
+                
+            if q_res and isinstance(q_res, list) and len(q_res) > 0:
+                q = q_res[0]
+                data.update({
+                    "Price": q.get("price"),
+                    "52W Low": q.get("yearLow"),
+                    "52W High": q.get("yearHigh"),
+                    "_mcap": q.get("marketCap"),
+                    "_eps": q.get("eps"),
+                    "PE": q.get("pe")
+                })
+            
+            # 2. Fetch Deep Metrics (ROE, FCF, Debt/Equity, etc.)
             m_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{t}?apikey={FMP_API_KEY}"
-            res = requests.get(m_url, timeout=5).json()
-            if res:
-                m = res[0]
-                return {
-                    "Ticker": t,
+            m_res = requests.get(m_url, timeout=5).json()
+            if m_res and isinstance(m_res, list) and len(m_res) > 0:
+                m = m_res[0]
+                data.update({
                     "PB": m.get("pbRatioTTM"),
                     "PEG": m.get("pegRatioTTM"),
                     "EV/EBITDA": m.get("enterpriseValueOverEBITDATTM"),
@@ -110,31 +104,45 @@ def fetch_all_data(sp500_df: pd.DataFrame) -> pd.DataFrame:
                     "_bvps": m.get("bookValuePerShareTTM"),
                     "_d2e": m.get("debtToEquityTTM"),
                     "_fcf_yield_raw": m.get("freeCashFlowYieldTTM", 0)
-                }
-        except: pass
-        return {"Ticker": t}
+                })
+        except Exception:
+            pass # Skip silently on a hard network crash for one stock
+            
+        return data
 
+    # Send out our 15 parallel workers
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = {ex.submit(get_metrics, t): t for t in tickers}
+        futures = {ex.submit(get_stock_data, t): t for t in tickers}
         for future in as_completed(futures):
             done += 1
-            status.text(f"Fetching metrics {done}/{len(tickers)}: {futures[future]}")
-            metric_results.append(future.result())
+            status.text(f"Fetching data {done}/{len(tickers)}: {futures[future]}")
+            combined_results.append(future.result())
             progress.progress(done / len(tickers))
             
     status.empty()
     progress.empty()
-    df_metrics = pd.DataFrame(metric_results)
+    
+    df_combined = pd.DataFrame(combined_results)
+    if df_combined.empty: 
+        return pd.DataFrame()
 
     # MERGE & CALCULATE
-    df_final = pd.merge(df_quotes, df_metrics, on="Ticker", how="left")
-    df_final = pd.merge(df_final, sp500_df, on="Ticker", how="left")
+    df_final = pd.merge(df_combined, sp500_df, on="Ticker", how="inner")
     
-    df_final["Mkt Cap ($B)"] = df_final["_mcap"] / 1e9
-    df_final["Earn Yield (%)"] = (1 / df_final["PE"] * 100).where(df_final["PE"] > 0, None)
-    df_final["% from Low"] = ((df_final["Price"] - df_final["52W Low"]) / df_final["52W Low"] * 100).where(df_final["52W Low"] > 0, None)
-    df_final["% from High"] = ((df_final["Price"] - df_final["52W High"]) / df_final["52W High"] * 100).where(df_final["52W High"] > 0, None)
-    df_final["_fcf"] = df_final["_fcf_yield_raw"] * df_final["_mcap"]
+    df_final["Mkt Cap ($B)"] = df_final.get("_mcap", pd.Series(dtype=float)) / 1e9
+    
+    if "PE" in df_final.columns:
+        df_final["Earn Yield (%)"] = (1 / df_final["PE"] * 100).where(df_final["PE"] > 0, None)
+    else:
+        df_final["Earn Yield (%)"] = None
+
+    if "Price" in df_final.columns and "52W Low" in df_final.columns:
+        df_final["% from Low"] = ((df_final["Price"] - df_final["52W Low"]) / df_final["52W Low"] * 100).where(df_final["52W Low"] > 0, None)
+        df_final["% from High"] = ((df_final["Price"] - df_final["52W High"]) / df_final["52W High"] * 100).where(df_final["52W High"] > 0, None)
+    else:
+        df_final["% from Low"], df_final["% from High"] = None, None
+
+    df_final["_fcf"] = df_final.get("_fcf_yield_raw", 0) * df_final.get("_mcap", 0)
     
     def calc_graham(row):
         eps, bvps = row.get("_eps"), row.get("_bvps")
