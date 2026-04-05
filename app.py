@@ -63,24 +63,29 @@ def fetch_all_data(sp500_df: pd.DataFrame) -> pd.DataFrame:
     
     # BATCH FETCH QUOTES
     quote_results = []
-    batch_size = 50
+    batch_size = 50  # We will ask FMP for 50 at a time
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i+batch_size]
         symbols = ",".join(batch)
         url = f"https://financialmodelingprep.com/api/v3/quote/{symbols}?apikey={FMP_API_KEY}"
         try:
             resp = requests.get(url, timeout=10).json()
+            
+            # THE SNIFFER: If FMP sends an error message instead of data, print it to the screen!
+            if isinstance(resp, dict) and "Error Message" in resp:
+                st.error(f"FMP API Blocked us at Quotes! Reason: {resp['Error Message']}")
+                st.stop()
+                
             if isinstance(resp, list):
                 quote_results.extend(resp)
-        except Exception: pass
+        except Exception as e: 
+            st.error(f"Network crash on Quotes: {e}")
+            st.stop()
         
     df_quotes = pd.DataFrame(quote_results)
-    if df_quotes.empty: return pd.DataFrame()
-    
-    df_quotes = df_quotes.rename(columns={
-        "symbol": "Ticker", "price": "Price", "yearLow": "52W Low", 
-        "yearHigh": "52W High", "marketCap": "_mcap", "eps": "_eps", "pe": "PE"
-    })
+    if df_quotes.empty: 
+        st.error("Quote dataframe is entirely empty. FMP returned nothing.")
+        return pd.DataFrame()
 
     # DEEP METRICS FETCH
     metric_results = []
