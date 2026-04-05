@@ -4,5 +4,3 @@ pandas
 plotly
 requests
 numpy
-lxml
-html5lib
