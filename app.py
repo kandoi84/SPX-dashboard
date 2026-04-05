@@ -28,20 +28,27 @@ def fmt_num(v, d=1): return f"{v:.{d}f}" if pd.notna(v) and v is not None else "
 def fmt_pct(v, d=1): return f"{v:.{d}f}%" if pd.notna(v) and v is not None else "N/A"
 
 # =============================================================================
-# 1. LOAD S&P 500 FROM FMP (1 API Call)
+# 1. LOAD S&P 500 FROM WIKIPEDIA (100% Free, Bypasses FMP Paywall)
 # =============================================================================
-@st.cache_data(ttl=86400) # Caches for 24 hours to save API limits
+@st.cache_data(ttl=86400) # Caches for 24 hours
 def load_sp500_tickers() -> pd.DataFrame:
-    url = f"https://financialmodelingprep.com/api/v3/sp500_constituent?apikey={FMP_API_KEY}"
     try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        df = pd.DataFrame(data).head(LIMIT_TICKERS)
-        df = df.rename(columns={"symbol": "Ticker", "name": "Name", "sector": "Sector"})
-        return df[["Ticker", "Name", "Sector"]]
+        # Scrape the live table directly from Wikipedia
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        tables = pd.read_html(url)
+        df = tables[0]
+        
+        # Rename columns to match our dashboard
+        df = df.rename(columns={"Symbol": "Ticker", "Security": "Name", "GICS Sector": "Sector"})
+        
+        # Wikipedia uses dots (BRK.B), but APIs use dashes (BRK-B). Let's fix that!
+        df["Ticker"] = df["Ticker"].str.replace('.', '-', regex=False)
+        
+        # Limit to 200 to save your FMP API credits!
+        return df[["Ticker", "Name", "Sector"]].head(LIMIT_TICKERS)
+        
     except Exception as e:
-        st.error(f"Failed to fetch S&P 500 list from FMP: {e}")
+        st.error(f"Failed to fetch S&P 500 list from Wikipedia: {e}")
         st.stop()
 
 # =============================================================================
