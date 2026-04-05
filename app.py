@@ -4,20 +4,21 @@ import requests
 import plotly.graph_objects as go
 import plotly.express as px
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 import io
 
 # =============================================================================
 # CONFIG & API
 # =============================================================================
-FMP_API_KEY          = "1eA8Evcu6mUTfbv2CuV4fdlBBzAQ599j"
+# ⚠️ PASTE YOUR BRAND NEW API KEY HERE ⚠️
+FMP_API_KEY          = "YOUR_NEW_API_KEY_HERE" 
+
 US_RISK_FREE_RATE    = 4.3    
 DCF_DEFAULT_GROWTH   = 10.0
 DCF_DEFAULT_DISCOUNT = 10.0
 DCF_TERMINAL_GROWTH  = 3.0
 DCF_YEARS            = 10
-MAX_WORKERS          = 15   # FMP handles concurrent requests much better than Yahoo
-LIMIT_TICKERS        = 200  # Limited to 200 as requested to save API limits
+MAX_WORKERS          = 15   
+LIMIT_TICKERS        = 5  # 🐌 TEST MODE: Only doing 5 stocks to save your 250 daily limit!
 
 # =============================================================================
 # PAGE CONFIG & FORMATTERS
@@ -29,20 +30,18 @@ def fmt_num(v, d=1): return f"{v:.{d}f}" if pd.notna(v) and v is not None else "
 def fmt_pct(v, d=1): return f"{v:.{d}f}%" if pd.notna(v) and v is not None else "N/A"
 
 # =============================================================================
-# 1. LOAD S&P 500 FROM WIKIPEDIA (With StringIO Fix)
+# 1. LOAD S&P 500 FROM WIKIPEDIA (Bypasses FMP Paywall & 403 Error)
 # =============================================================================
 @st.cache_data(ttl=86400) # Caches for 24 hours
 def load_sp500_tickers() -> pd.DataFrame:
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        
         html_data = requests.get(url, headers=headers, timeout=10).text
         
-        # THE FIX: Wrap the html_data in io.StringIO() so Pandas doesn't think it's a file name
+        # The StringIO fix to stop Pandas from crashing!
         tables = pd.read_html(io.StringIO(html_data))
         df = tables[0]
         
@@ -56,13 +55,13 @@ def load_sp500_tickers() -> pd.DataFrame:
         st.stop()
 
 # =============================================================================
-# 2. MASTER DATA ENGINE (Uses ~204 API Calls, heavily cached)
+# 2. MASTER DATA ENGINE (Fast & Reliable)
 # =============================================================================
 @st.cache_data(ttl=86400)
 def fetch_all_data(sp500_df: pd.DataFrame) -> pd.DataFrame:
     tickers = sp500_df["Ticker"].tolist()
     
-    # --- A. BATCH FETCH QUOTES (Fast: 4 API Calls total) ---
+    # BATCH FETCH QUOTES
     quote_results = []
     batch_size = 50
     for i in range(0, len(tickers), batch_size):
@@ -83,7 +82,7 @@ def fetch_all_data(sp500_df: pd.DataFrame) -> pd.DataFrame:
         "yearHigh": "52W High", "marketCap": "_mcap", "eps": "_eps", "pe": "PE"
     })
 
-    # --- B. DEEP METRICS FETCH (Heavy: 200 API Calls) ---
+    # DEEP METRICS FETCH
     metric_results = []
     progress = st.progress(0)
     status = st.empty()
@@ -114,7 +113,7 @@ def fetch_all_data(sp500_df: pd.DataFrame) -> pd.DataFrame:
         futures = {ex.submit(get_metrics, t): t for t in tickers}
         for future in as_completed(futures):
             done += 1
-            status.text(f"Fetching deep metrics {done}/{len(tickers)}: {futures[future]}")
+            status.text(f"Fetching metrics {done}/{len(tickers)}: {futures[future]}")
             metric_results.append(future.result())
             progress.progress(done / len(tickers))
             
@@ -122,7 +121,7 @@ def fetch_all_data(sp500_df: pd.DataFrame) -> pd.DataFrame:
     progress.empty()
     df_metrics = pd.DataFrame(metric_results)
 
-    # --- C. MERGE & CALCULATE ---
+    # MERGE & CALCULATE
     df_final = pd.merge(df_quotes, df_metrics, on="Ticker", how="left")
     df_final = pd.merge(df_final, sp500_df, on="Ticker", how="left")
     
@@ -139,7 +138,6 @@ def fetch_all_data(sp500_df: pd.DataFrame) -> pd.DataFrame:
         return None
     df_final["Graham"] = df_final.apply(calc_graham, axis=1)
     
-    # Placeholders for data FMP requires a premium plan for (Beta, Rev Growth)
     df_final["Beta"] = None 
     df_final["Rev Growth (%)"] = None 
 
@@ -160,7 +158,7 @@ def compute_score(row) -> int:
     if pd.notna(row.get("Earn Yield (%)")) and row["Earn Yield (%)"] > US_RISK_FREE_RATE: score += 1
     return score
 
-MAX_SCORE = 8 # Lowered slightly since Beta and Rev Growth were removed from free FMP
+MAX_SCORE = 8 
 
 def generate_signals(row) -> str:
     s = []
@@ -187,7 +185,7 @@ st.title("🇺🇸 S&P 500 Intelligence Dashboard (FMP Edition)")
 st.caption(f"Powered by Financial Modeling Prep • Risk-free rate: {US_RISK_FREE_RATE}%")
 
 sp500_df = load_sp500_tickers()
-st.info(f"Loaded **{len(sp500_df)} S&P 500 constituents**. Fetching reliable data via FMP API...")
+st.info(f"Loaded **{len(sp500_df)} S&P 500 constituents** for testing. Fetching data via FMP API...")
 
 df = fetch_all_data(sp500_df)
 
@@ -281,7 +279,7 @@ with tab1:
     st.dataframe(styled, width='stretch', hide_index=True)
 
 # --------------------------------------------------------------------------- #
-# TAB 2 & 3 — MAP & SECTOR (Condensed to save text space)
+# TAB 2 & 3 — MAP & SECTOR
 # --------------------------------------------------------------------------- #
 with tab2:
     map_df = fdf.dropna(subset=["PE", "% from Low", "Mkt Cap ($B)"]).copy()
@@ -295,14 +293,13 @@ with tab3:
     st.dataframe(sec_agg, use_container_width=True, hide_index=True)
 
 # --------------------------------------------------------------------------- #
-# TAB 4 — PRICE CHART (Powered by FMP Historical)
+# TAB 4 — PRICE CHART 
 # --------------------------------------------------------------------------- #
 with tab4:
     st.subheader("📈 FMP Historical Price Chart")
     chart_choice = st.selectbox("Select Stock", fdf.sort_values("Ticker")["Ticker"].tolist(), key="chart_sel")
     
     if chart_choice:
-        # FMP Chart API call (Only fetches when clicked!)
         c_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{chart_choice}?timeseries=252&apikey={FMP_API_KEY}"
         hist_data = requests.get(c_url).json()
         
@@ -320,16 +317,14 @@ with tab4:
             st.plotly_chart(fig_c, use_container_width=True)
 
 # --------------------------------------------------------------------------- #
-# TAB 5 — DEEP DIVE TERMINAL (Instant load!)
+# TAB 5 — DEEP DIVE TERMINAL
 # --------------------------------------------------------------------------- #
 with tab5:
     st.subheader("🕵️ Fundamental Terminal")
     term_choice = st.selectbox("Select Stock", fdf.sort_values("Ticker")["Ticker"].tolist(), key="term_sel")
 
     if term_choice:
-        # We pre-fetched everything in the master engine! No API call needed here.
         row = fdf[fdf["Ticker"] == term_choice].iloc[0]
-        
         price   = row.get("Price")
         eps     = row.get("_eps", 0)
         bvps    = row.get("_bvps", 0)
@@ -362,7 +357,6 @@ with tab5:
         v7.metric("PEG", fmt_num(peg))
         v8.metric("Debt / Equity", fmt_num(d2e))
 
-        # DCF
         st.markdown("#### 🔢 DCF Intrinsic Value Estimator")
         dcf1, dcf2, dcf3 = st.columns(3)
         g_rate = dcf1.slider("FCF Growth Rate (%)", 0.0, 30.0, DCF_DEFAULT_GROWTH, 0.5)
@@ -380,24 +374,15 @@ with tab5:
             d3.metric("Price / DCF", fmt_num(price / dcf_value))
 
 # =============================================================================
-# DOWNLOAD (Your Original Feature)
+# DOWNLOADS
 # =============================================================================
 st.divider()
-csv = fdf.to_csv(index=False).encode('utf-8')
-st.download_button(
-    label="⬇️ Download Data as CSV",
-    data=csv,
-    file_name="nifty_dashboard_data.csv",
-    mime="text/csv"
-)
-# =============================================================================
-# DOWNLOAD (Your Original Feature)
-# =============================================================================
-st.divider()
-csv = fdf.to_csv(index=False).encode('utf-8')
-st.download_button(
-    label="⬇️ Download Data as CSV",
-    data=csv,
-    file_name="nifty_dashboard_data.csv",
-    mime="text/csv"
-)
+dl1, dl2 = st.columns(2)
+with dl1:
+    export_cols = ["Ticker", "Name", "Sector", "Price", "Mkt Cap ($B)", "PE", "PB", "PEG",
+                   "EV/EBITDA", "ROE (%)", "FCF Yield (%)", "Div Yield (%)",
+                   "% from Low", "Score", "Signals"]
+    st.download_button("⬇️ Download Screener CSV", fdf[export_cols].to_csv(index=False).encode('utf-8'), "sp500_screener.csv", mime="text/csv")
+with dl2:
+    top10 = fdf.nlargest(10, "Score")[["Ticker", "Name", "Sector", "Score", "Signals"]]
+    st.download_button("⬇️ Download Top 10 by Score", top10.to_csv(index=False).encode('utf-8'), "sp500_top10.csv", mime="text/csv")
