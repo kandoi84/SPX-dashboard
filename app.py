@@ -55,15 +55,23 @@ def fmt_bn(v):
 # =============================================================================
 @st.cache_data(ttl=86400)  # Refresh once a day
 def load_sp500_tickers() -> pd.DataFrame:
-    """Scrape S&P 500 constituents from Wikipedia."""
+    """Scrape S&P 500 constituents from Wikipedia using a browser user-agent."""
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
     try:
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        tables = pd.read_html(url)
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        tables = pd.read_html(response.text)
         df = tables[0]
-        # Wikipedia columns: Symbol, Security, GICS Sector, GICS Sub-Industry, etc.
         df = df[["Symbol", "Security", "GICS Sector"]].copy()
         df.columns = ["Ticker", "Name", "Sector"]
-        # Fix known symbol differences between Wikipedia and Yahoo Finance
+        # Fix symbol differences between Wikipedia and Yahoo Finance
         df["Ticker"] = df["Ticker"].str.replace(".", "-", regex=False)
         return df.drop_duplicates(subset="Ticker").reset_index(drop=True)
     except Exception as e:
