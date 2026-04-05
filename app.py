@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+import io
 
 # =============================================================================
 # CONFIG & API
@@ -28,32 +29,26 @@ def fmt_num(v, d=1): return f"{v:.{d}f}" if pd.notna(v) and v is not None else "
 def fmt_pct(v, d=1): return f"{v:.{d}f}%" if pd.notna(v) and v is not None else "N/A"
 
 # =============================================================================
-# 1. LOAD S&P 500 FROM WIKIPEDIA (With "Human" Headers)
+# 1. LOAD S&P 500 FROM WIKIPEDIA (With StringIO Fix)
 # =============================================================================
 @st.cache_data(ttl=86400) # Caches for 24 hours
 def load_sp500_tickers() -> pd.DataFrame:
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         
-        # Give our code a "name tag" so Wikipedia thinks it's a real browser
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
-        # Fetch the webpage text securely
         html_data = requests.get(url, headers=headers, timeout=10).text
         
-        # Now let Pandas read the raw HTML text
-        tables = pd.read_html(html_data)
+        # THE FIX: Wrap the html_data in io.StringIO() so Pandas doesn't think it's a file name
+        tables = pd.read_html(io.StringIO(html_data))
         df = tables[0]
         
-        # Rename columns to match our dashboard
         df = df.rename(columns={"Symbol": "Ticker", "Security": "Name", "GICS Sector": "Sector"})
-        
-        # Wikipedia uses dots (BRK.B), but APIs use dashes (BRK-B). Let's fix that!
         df["Ticker"] = df["Ticker"].str.replace('.', '-', regex=False)
         
-        # Limit to 200 to save your FMP API credits!
         return df[["Ticker", "Name", "Sector"]].head(LIMIT_TICKERS)
         
     except Exception as e:
