@@ -210,33 +210,27 @@ df["Score"]   = df.apply(compute_score, axis=1)
 df["Signals"] = df.apply(generate_signals, axis=1)
 
 # =============================================================================
-# SIDEBAR FILTERS
+# SIDEBAR FILTERS (With Safety Check)
 # =============================================================================
-with st.sidebar:
-    st.header("🔍 Filters")
-    sectors = sorted(df["Sector"].dropna().unique())
-    sel_sector = st.selectbox("Sector", ["All"] + sectors)
-
-    st.divider()
-    pe_max   = st.slider("Max P/E",        0, 200, 200)
-    pb_max   = st.slider("Max P/B",        0, 50,  50)
-    ev_max   = st.slider("Max EV/EBITDA",  0, 100, 100)
-    low_max  = st.slider("Max % from Low", 0, 500, 500)
-
-    st.divider()
-    min_score = st.slider(f"Min Score (out of {MAX_SCORE})", 0, MAX_SCORE, 0)
-
 fdf = df.copy()
-if sel_sector != "All": fdf = fdf[fdf["Sector"] == sel_sector]
 
-fdf = fdf[
-    (fdf["PE"].isna()        | (fdf["PE"]        <= pe_max))  &
-    (fdf["PB"].isna()        | (fdf["PB"]        <= pb_max))  &
-    (fdf["EV/EBITDA"].isna() | (fdf["EV/EBITDA"] <= ev_max))  &
-    (fdf["% from Low"].isna()| (fdf["% from Low"]<= low_max)) &
-    (fdf["Score"]            >= min_score)
-]
+# Only attempt to filter if data was actually fetched
+if not fdf.empty:
+    if sel_sector != "All": 
+        fdf = fdf[fdf["Sector"] == sel_sector]
 
+    # Safety check for the PE column to prevent KeyError
+    if "PE" in fdf.columns:
+        fdf = fdf[
+            (fdf["PE"].isna()        | (fdf["PE"]        <= pe_max))  &
+            (fdf["PB"].isna()        | (fdf["PB"]        <= pb_max))  &
+            (fdf["EV/EBITDA"].isna() | (fdf["EV/EBITDA"] <= ev_max))  &
+            (fdf["% from Low"].isna()| (fdf["% from Low"]<= low_max)) &
+            (fdf["Score"]            >= min_score)
+        ]
+else:
+    st.warning("No data available to filter. Please check your API key or connection.")
+    
 # =============================================================================
 # TOP METRICS
 # =============================================================================
