@@ -20,7 +20,7 @@ DCF_DEFAULT_GROWTH   = 10.0
 DCF_DEFAULT_DISCOUNT = 10.0
 DCF_TERMINAL_GROWTH  = 3.0
 DCF_YEARS            = 10
-MAX_WORKERS          = 15   # S&P 500 is large, push parallelism higher
+MAX_WORKERS          = 3    # Lowered to 3 to prevent Yahoo Finance Rate Limiting
 
 # =============================================================================
 # PAGE CONFIG
@@ -175,7 +175,7 @@ def fetch_single(row: dict) -> dict | None:
         return {
             "Ticker":         ticker,
             "Name":           row.get("Name", info.get("shortName", ticker)),
-            "Sector":         row.get("Sector", info.get("sector", "Unknown")),
+            "Sector":         row.get("Sector", info.get("Unknown", "Unknown")),
             "Price":          price,
             "52W Low":        low52,
             "52W High":       high52,
@@ -204,7 +204,9 @@ def fetch_single(row: dict) -> dict | None:
             "_pm":     info.get("profitMargins"),
             "_om":     info.get("operatingMargins"),
         }
-    except Exception:
+    except Exception as e:
+        # Detective Fix: Print exactly why Yahoo failed to the black terminal box
+        print(f"Error fetching {ticker}: {e}") 
         return None
 
 # =============================================================================
@@ -291,11 +293,11 @@ if sp500_df.empty:
 
 st.info(f"Loaded **{len(sp500_df)} S&P 500 constituents** from Yahoo Finance. Fetching financials...")
 
-with st.spinner("Fetching market data in parallel — this takes ~2–3 min for all 500 stocks..."):
+with st.spinner("Fetching market data in parallel — this takes ~2–3 min for all 50 stocks..."):
     df = fetch_all(sp500_df)
 
 if df.empty:
-    st.error("Zero data fetched.")
+    st.error("Zero data fetched. Please check your terminal for the exact error from Yahoo Finance.")
     st.stop()
 
 df = df.dropna(subset=["Price"])
@@ -711,4 +713,201 @@ with dl2:
         top10.to_csv(index=False),
         "sp500_top10.csv",
         mime="text/csv"
+    )
+
+# =============================================================================
+# APPENDIX — METHODOLOGY & CALCULATIONS
+# =============================================================================
+st.divider()
+with st.expander("📚 Appendix: Methodology & Calculations", expanded=False):
+
+    st.markdown("## 📐 Graham Number — Full Explanation")
+
+    st.markdown("""
+### What is the Graham Number?
+
+The **Graham Number** is a figure that measures a stock's fundamental value, developed by
+**Benjamin Graham** — the father of value investing and mentor to Warren Buffett. It was
+introduced in his 1949 book *The Intelligent Investor* and represents the **maximum price
+a defensive investor should pay** for a stock based on its earnings and book value.
+
+The idea is simple: a stock trading *below* its Graham Number is potentially undervalued.
+A stock trading *above* it may be overpriced relative to its fundamentals.
+
+---
+
+### The Formula
+""")
+
+    st.latex(r"\text{Graham Number} = \sqrt{22.5 \times \text{EPS} \times \text{BVPS}}")
+
+    st.markdown("""
+Where:
+- **EPS** = Earnings Per Share (trailing twelve months)
+- **BVPS** = Book Value Per Share (shareholders' equity ÷ shares outstanding)
+- **22.5** = a constant derived from Graham's two valuation rules (explained below)
+
+---
+
+### Where Does 22.5 Come From?
+
+Graham set two maximum thresholds for a stock to be considered "reasonably priced":
+
+| Rule | Graham's Threshold | Meaning |
+|---|---|---|
+| Max P/E ratio | **≤ 15×** | Don't pay more than 15× earnings |
+| Max P/B ratio | **≤ 1.5×** | Don't pay more than 1.5× book value |
+
+Multiplying these two limits together: **15 × 1.5 = 22.5**
+
+This means a stock at exactly the Graham Number has a P/E of 15 AND a P/B of 1.5 — 
+sitting right at Graham's acceptable upper boundary.
+
+---
+
+### Step-by-Step Worked Example
+
+Let's calculate the Graham Number for a hypothetical stock:
+
+| Input | Value |
+|---|---|
+| Earnings Per Share (EPS) | $5.00 |
+| Book Value Per Share (BVPS) | $40.00 |
+""")
+
+    st.latex(r"\text{Graham Number} = \sqrt{22.5 \times \$5.00 \times \$40.00}")
+    st.latex(r"= \sqrt{22.5 \times 200}")
+    st.latex(r"= \sqrt{4{,}500}")
+    st.latex(r"= \$67.08")
+
+    st.markdown("""
+So if this stock is trading at **$50**, it is trading at a **25.4% discount** to its
+Graham Number — potentially undervalued by Graham's standards.
+
+If it's trading at **$90**, it is trading at a **34.2% premium** — potentially overvalued.
+
+---
+
+### Margin of Safety
+
+Graham always emphasized buying with a **margin of safety** — purchasing significantly
+below intrinsic value to protect against estimation errors and market volatility.
+
+The margin of safety shown in this dashboard is calculated as:
+""")
+
+    st.latex(r"\text{Margin of Safety} = \frac{\text{Graham Number} - \text{Current Price}}{\text{Current Price}} \times 100")
+
+    st.markdown("""
+| Result | Interpretation |
+|---|---|
+| **Positive %** | Stock is trading below Graham Number → potential discount |
+| **Negative %** | Stock is trading above Graham Number → potential premium |
+| **> 30% positive** | Strong margin of safety — Graham's preferred range |
+
+---
+
+### Limitations of the Graham Number
+
+The Graham Number is a **starting point**, not a complete valuation. Be aware of:
+
+| Limitation | Why it matters |
+|---|---|
+| **Requires positive EPS and BVPS** | The formula breaks down for loss-making companies or those with negative book value (common in tech/financials) |
+| **Uses trailing EPS** | Backward-looking — doesn't account for high-growth companies whose future earnings will be much higher |
+| **Ignores growth** | A company growing at 30% annually may deserve a PE of 30, not 15 — the Graham Number would undervalue it |
+| **Book value is distorted** | Share buybacks, goodwill, and intangible assets can make BVPS misleading |
+| **Sector blind** | A PE of 15 is expensive for utilities but cheap for software — Graham Number doesn't adjust for sector norms |
+| **Inflation era caveat** | Graham developed this in the 1940s–70s with different interest rate regimes |
+
+**Rule of thumb:** Use the Graham Number as a **conservative floor** for valuation, not 
+a ceiling. Combine it with DCF, PEG, FCF Yield, and sector comparisons for a fuller picture.
+
+---
+
+### How to Use Graham Number in This Dashboard
+
+1. **Terminal Tab** → Shows Graham Number vs Current Price with discount/premium %
+2. **Screener Tab** → Sort by Score; stocks with positive Graham margin score higher
+3. **Signals Column** → "Low PE" and "PEG<1" flags complement Graham analysis
+4. **Combine with** → DCF (forward-looking), ROE (quality), FCF Yield (cash generation)
+
+---
+""")
+
+    st.markdown("## 📊 Other Calculations Used in This Dashboard")
+
+    st.markdown("### Earnings Yield vs Risk-Free Rate")
+    st.latex(r"\text{Earnings Yield} = \frac{1}{\text{P/E Ratio}} \times 100")
+    st.markdown(f"""
+Compared against the **10Y US Treasury yield ({US_RISK_FREE_RATE}%)**.
+
+- If Earnings Yield **>** Risk-Free Rate → equity compensates for risk taken
+- If Earnings Yield **<** Risk-Free Rate → bonds may offer better risk-adjusted returns
+
+This is the **Fed Model** of equity valuation, popularized in the 1990s.
+""")
+
+    st.markdown("### FCF Yield")
+    st.latex(r"\text{FCF Yield} = \frac{\text{Free Cash Flow}}{\text{Market Cap}} \times 100")
+    st.markdown("""
+Free Cash Flow = Operating Cash Flow − Capital Expenditure
+
+FCF Yield measures how much actual cash a business generates relative to its market value.
+A high FCF Yield (>5%) signals the company generates real cash, not just accounting profits.
+""")
+
+    st.markdown("### PEG Ratio")
+    st.latex(r"\text{PEG} = \frac{\text{P/E Ratio}}{\text{Earnings Growth Rate (\%)}}")
+    st.markdown("""
+- **PEG < 1** → Stock may be undervalued relative to its growth rate
+- **PEG = 1** → Fairly valued (growth matches multiple)
+- **PEG > 2** → Growth is expensive; high execution risk
+
+Developed by Peter Lynch. Adjusts P/E for growth — a PE of 30 with 30% growth (PEG=1) 
+is arguably cheaper than a PE of 20 with 5% growth (PEG=4).
+""")
+
+    st.markdown("### DCF (Discounted Cash Flow)")
+    st.latex(r"\text{Intrinsic Value} = \sum_{t=1}^{n} \frac{FCF \times (1+g)^t}{(1+r)^t} + \frac{TV}{(1+r)^n}")
+    st.latex(r"\text{Terminal Value (TV)} = \frac{FCF \times (1+g)^n \times (1+g_{terminal})}{r - g_{terminal}}")
+    st.markdown(f"""
+Where:
+- **FCF** = Current Free Cash Flow
+- **g** = Projected FCF growth rate (adjustable slider, default {DCF_DEFAULT_GROWTH}%)
+- **r** = Discount rate / required return (adjustable slider, default {DCF_DEFAULT_DISCOUNT}%)
+- **g_terminal** = Perpetual terminal growth rate (adjustable slider, default {DCF_TERMINAL_GROWTH}%)
+- **n** = Projection years ({DCF_YEARS} years)
+
+The DCF result is divided by shares outstanding to get **intrinsic value per share**.
+
+**Key sensitivity:** The discount rate has the largest impact on DCF output. A 1% change 
+in discount rate can move intrinsic value by 15–25%. Always run multiple scenarios.
+""")
+
+    st.markdown("### Composite Score (0–10)")
+    st.markdown(f"""
+Each stock is scored on 10 criteria, earning 1 point per criterion passed:
+
+| # | Criterion | Threshold | Rationale |
+|---|---|---|---|
+| 1 | P/E Ratio | < 25× | Below S&P 500 long-run average |
+| 2 | Price/Book | < 4× | Reasonable asset backing |
+| 3 | PEG Ratio | < 1× | Growth available at fair price |
+| 4 | EV/EBITDA | < 15× | Enterprise value vs operating profit |
+| 5 | ROE | > 15% | Quality of capital allocation |
+| 6 | FCF Yield | > 3% | Real cash generation |
+| 7 | Beta | 0.5–1.3 | Moderate market sensitivity |
+| 8 | % from 52W Low | < 25% | Not extended from lows |
+| 9 | Revenue Growth | > 8% | Business momentum |
+| 10 | Earnings Yield | > {US_RISK_FREE_RATE}% | Beats risk-free rate |
+
+Score ≥ 8 = Strong candidate · Score ≥ 5 = Worth reviewing · Score ≤ 2 = Avoid
+""")
+
+    st.info(
+        "**Disclaimer:** All calculations use data from yfinance (Yahoo Finance). "
+        "This dashboard is for educational and research purposes only — not financial advice. "
+        "Always verify figures from primary sources (SEC filings, company reports) "
+        "before making any investment decisions."
     )
