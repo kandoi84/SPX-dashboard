@@ -12,16 +12,16 @@ import io
 # CONFIG & API
 # ==========================================================
 FMP_API_KEY = "1eA8Evcu6mUTfbv2CuV4fdlBBzAQ599j"
-LIMIT_TICKERS = 50  # Increase to 500 for full launch
-MAX_WORKERS = 4
-BATCH_SIZE = 10
+LIMIT_TICKERS = 30  # Start small to ensure it works, then change to 500
+MAX_WORKERS = 5
+BATCH_SIZE = 5
 US_RISK_FREE_RATE = 4.3
 
-st.set_page_config(layout="wide", page_title="S&P 500 Terminal V7.6", page_icon="🏦")
+st.set_page_config(layout="wide", page_title="S&P 500 Terminal V7.7", page_icon="🏦")
 
 # ==========================================================
 # HELPERS
-# ==========================================
+# ==========================================================
 def safe_fmt(v, prefix="", suffix=""):
     if pd.isna(v) or v is None: return "N/A"
     try: return f"{prefix}{float(v):,.2f}{suffix}"
@@ -29,13 +29,13 @@ def safe_fmt(v, prefix="", suffix=""):
 
 def safe_request(url):
     try:
-        r = requests.get(url, timeout=5)
+        r = requests.get(url, timeout=10)
         if r.status_code == 200: return r.json()
     except: return None
     return None
 
 # ==========================================================
-# 1. LOAD TICKERS
+# 1. LOAD TICKERS (Wikipedia + Cleaning)
 # ==========================================================
 @st.cache_data(ttl=86400)
 def load_sp500():
@@ -45,24 +45,25 @@ def load_sp500():
         html_data = requests.get(url, headers=headers, timeout=10).text
         df = pd.read_html(io.StringIO(html_data))[0]
         df = df.rename(columns={"Symbol":"Ticker","Security":"Name","GICS Sector":"Sector"})
-        df["Ticker"] = df["Ticker"].str.replace(".", "-", regex=False)
+        # Clean tickers: Remove whitespace and convert . to -
+        df["Ticker"] = df["Ticker"].str.strip().str.replace(".", "-", regex=False)
         return df.head(LIMIT_TICKERS)
     except Exception as e:
         st.error(f"Wikipedia Fetch Failed: {e}")
         return pd.DataFrame(columns=["Ticker", "Name", "Sector"])
 
 # ==========================================================
-# 2. FETCH DATA
+# 2. FETCH DATA (Balanced Parallel Engine)
 # ==========================================================
 def get_data(t):
-    d = {"Ticker": t}
+    d = {"Ticker": t, "Price": None, "PE": None, "ROE": None}
+    # 1. Quote
     q = safe_request(f"https://financialmodelingprep.com/api/v3/quote/{t}?apikey={FMP_API_KEY}")
-    m = safe_request(f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{t}?apikey={FMP_API_KEY}")
-
     if q and isinstance(q, list) and len(q) > 0:
         val = q[0]
         d.update({"Price": val.get("price"), "PE": val.get("pe"), "MarketCap": val.get("marketCap"), "EPS": val.get("eps")})
-
+    # 2. Metrics
+    m = safe_request(f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{t}?apikey={FMP_API_KEY}")
     if m and isinstance(m, list) and len(m) > 0:
         val = m[0]
         d.update({"PB": val.get("pbRatioTTM"), "ROE": val.get("roeTTM"), "PEG": val.get("pegRatioTTM"),
@@ -73,123 +74,119 @@ def get_data(t):
 def fetch_all(df_list):
     tickers = df_list["Ticker"].tolist()
     results = []
-    progress = st.progress(0)
+    progress_bar = st.progress(0)
     for i in range(0, len(tickers), BATCH_SIZE):
         batch = tickers[i:i+BATCH_SIZE]
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             futures = [ex.submit(get_data, t) for t in batch]
             for f in as_completed(futures): results.append(f.result())
-        progress.progress(min((i + BATCH_SIZE) / len(tickers), 1.0))
-        time.sleep(0.4)
+        progress_bar.progress(min((i + BATCH_SIZE) / len(tickers), 1.0))
+        time.sleep(0.6)
     return pd.DataFrame(results)
 
 # ==========================================================
-# 3. SCORING ENGINE
+# 3. SCORING ENGINE (V7 PRO - Robust)
 # ==========================================================
 def add_scores(df):
-    # Ensure Score columns exist even if data is missing
-    df["Total_Score"] = 0.0
-    df["Value"] = 0.0
-    df["Quality"] = 0.0
+    cols = ["PE", "PB", "ROE", "FCF_Yield"]
+    for c in cols:
+        if c not in df.columns: df[c] = None
+        df[c] = pd.to_numeric(df[c], errors='coerce')
     
-    if df.empty: return df
-
-    required = ["PE", "PB", "ROE", "FCF_Yield"]
-    for col in required:
-        if col not in df.columns: df[col] = None
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    # Sector Averages
     if "Sector" in df.columns:
-        sec = df.groupby("Sector")[required].mean().add_suffix('_sec').reset_index()
-        df = df.merge(sec, on="Sector", how="left")
-
-        # Ranking
-        df["PE_score"] = (df["PE_sec"] / df["PE"]).rank(pct=True) if "PE_sec" in df.columns else 0
-        df["PB_score"] = (df["PB_sec"] / df["PB"]).rank(pct=True) if "PB_sec" in df.columns else 0
-        df["ROE_score"] = df["ROE"].rank(pct=True)
-        df["FCF_score"] = df["FCF_Yield"].rank(pct=True)
-
-        df["Value"] = (df["PE_score"].fillna(0) * 0.5 + df["PB_score"].fillna(0) * 0.5) * 100
-        df["Quality"] = (df["ROE_score"].fillna(0) * 0.6 + df["FCF_score"].fillna(0) * 0.4) * 100
-        df["Total_Score"] = (df["Value"] * 0.4 + df["Quality"] * 0.6)
-    
+        sec_avg = df.groupby("Sector")[cols].transform('mean').add_suffix('_sec')
+        df = pd.concat([df, sec_avg], axis=1)
+        
+        # Scoring logic (Lower PE vs Sector is better, Higher ROE is better)
+        df["PE_score"] = (df["PE_sec"] / df["PE"]).rank(pct=True).fillna(0)
+        df["ROE_score"] = df["ROE"].rank(pct=True).fillna(0)
+        
+        df["Total_Score"] = (df["PE_score"] * 40 + df["ROE_score"] * 60)
+    else:
+        df["Total_Score"] = 0
     return df
+
+# ==========================================================
+# 4. VALUATION MATH
+# ==========================================================
+def graham_calc(eps, bvps):
+    if pd.notna(eps) and pd.notna(bvps) and eps > 0 and bvps > 0:
+        return (22.5 * eps * bvps) ** 0.5
+    return None
+
+def dcf_calc(fcf_yield, mcap, price, g, r, tg):
+    if not fcf_yield or not mcap or not price or price <= 0: return None
+    fcf, shares = (fcf_yield * mcap), (mcap / price)
+    gr, dr, tgr = g/100, r/100, tg/100
+    pv = sum(fcf*(1+gr)**yr/(1+dr)**yr for yr in range(1, 11))
+    tv = (fcf*(1+gr)**10*(1+tgr))/(dr-tgr)
+    pv += tv/(1+dr)**10
+    return pv/shares
 
 # ==========================================================
 # MAIN UI
 # ==========================================================
-st.title("📊 S&P 500 Intelligence Terminal V7.6")
+st.title("📊 S&P 500 Intelligence Terminal V7.7")
 
 sp_data = load_sp500()
 df_raw = fetch_all(sp_data)
 
-# 🛡️ THE IRONCLAD INITIALIZATION 🛡️
-# This block guarantees the columns exist before the UI tries to read them
-final_cols = ["Ticker", "Name", "Total_Score", "PE", "ROE", "MarketCap", "Price", "EPS", "BVPS", "FCF_Yield", "Sector"]
+# Merging and Column Enforcement
 if not df_raw.empty:
     df = pd.merge(df_raw, sp_data, on="Ticker", how="inner")
+    df = add_scores(df)
 else:
-    df = pd.DataFrame(columns=final_cols)
-
-for col in final_cols:
-    if col not in df.columns: df[col] = None
-
-df = add_scores(df)
+    st.error("The API returned no data. Please check your key or try again in 1 minute.")
+    st.stop()
 
 # Filters
 with st.sidebar:
-    st.header("⚙️ Settings")
+    st.header("⚙️ Dashboard Settings")
     sector_list = ["All"] + sorted(df["Sector"].dropna().unique().tolist())
-    sel_sector = st.selectbox("Sector", sector_list)
+    sel_sector = st.selectbox("Industry", sector_list)
     max_pe = st.slider("Max P/E", 0, 100, 100)
 
 fdf = df.copy()
 if sel_sector != "All": fdf = fdf[fdf["Sector"] == sel_sector]
-if "PE" in fdf.columns:
-    fdf = fdf[(fdf["PE"].isna()) | (fdf["PE"] <= max_pe)]
+fdf = fdf[(fdf["PE"].isna()) | (fdf["PE"] <= max_pe)]
 
 # TABS
 tab1, tab2, tab3, tab4 = st.tabs(["📋 Screener","🗺️ Quality Map","📈 Price Chart","🏦 Deep Dive"])
 
 with tab1:
-    if fdf.empty:
-        st.warning("No data available. Please check your API key usage.")
-    else:
-        st.subheader("Ranked Opportunities")
-        # Fixed indexing here
-        st.dataframe(fdf.sort_values("Total_Score", ascending=False)[["Ticker","Name","Total_Score","PE","ROE","MarketCap"]], 
-                     use_container_width=True, hide_index=True)
+    st.subheader(" Ranked Investment Opportunities")
+    st.dataframe(fdf.sort_values("Total_Score", ascending=False)[["Ticker","Name","Total_Score","PE","ROE","MarketCap"]], 
+                 use_container_width=True, hide_index=True)
 
 with tab2:
-    if not fdf.empty and "PE" in fdf.columns:
-        st.subheader("🗺️ Valuation vs Profitability")
-        fig = px.scatter(fdf.dropna(subset=["PE","ROE"]), x="PE", y="ROE", color="Sector", size="MarketCap", hover_name="Ticker", template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True)
+    st.subheader("🗺️ Profitability vs. Valuation")
+    fig = px.scatter(fdf.dropna(subset=["PE","ROE"]), x="PE", y="ROE", color="Sector", size="MarketCap", hover_name="Ticker", template="plotly_white")
+    st.plotly_chart(fig, use_container_width=True)
 
 with tab3:
-    st.subheader("📈 Live Historical Chart")
-    t_chart = st.selectbox("Select Symbol", fdf["Ticker"].unique() if not fdf.empty else ["No Data"])
-    if t_chart != "No Data":
-        hist = yf.download(t_chart, period="1y", progress=False)
-        if not hist.empty:
-            fig_p = go.Figure(data=[go.Scatter(x=hist.index, y=hist['Close'], line=dict(color="#1f77b4"))])
-            fig_p.update_layout(template="plotly_white", height=400)
-            st.plotly_chart(fig_p, use_container_width=True)
+    st.subheader("📈 Yahoo Finance Charts")
+    t_chart = st.selectbox("Symbol", fdf["Ticker"].unique())
+    if t_chart:
+        h = yf.download(t_chart, period="1y", progress=False)
+        fig_p = go.Figure(data=[go.Scatter(x=h.index, y=h['Close'], line=dict(color="#1f77b4"))])
+        fig_p.update_layout(template="plotly_white", height=400)
+        st.plotly_chart(fig_p, use_container_width=True)
 
 with tab4:
-    st.subheader("🕵️ Fundamental Terminal")
-    if fdf.empty:
-        st.write("Fetch data first.")
-    else:
-        t_dive = st.selectbox("Ticker for Deep Dive", fdf["Ticker"].unique(), key="deep_dive")
-        row = fdf[fdf["Ticker"] == t_dive].iloc[0]
-        
-        c1, c2, c3 = st.columns(3)
-        g_rate = c1.slider("FCF Growth %", 0, 30, 10)
-        d_rate = c2.slider("Discount %", 5, 20, 10)
-        t_rate = c3.slider("Terminal %", 1, 5, 3)
+    st.subheader("🕵️ Fundamental Intrinsic Value")
+    t_dive = st.selectbox("Stock for Analysis", fdf["Ticker"].unique(), key="dive")
+    row = fdf[fdf["Ticker"] == t_dive].iloc[0]
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Market Price", safe_fmt(row.get('Price'), prefix="$"))
-        # Rest of math would go here...
+    c1, c2, c3 = st.columns(3)
+    g_rate = c1.slider("FCF Growth %", 0, 30, 10)
+    d_rate = c2.slider("Discount %", 5, 20, 10)
+    t_rate = c3.slider("Terminal %", 1, 5, 3)
+
+    g_val = graham_calc(row.get("EPS"), row.get("BVPS"))
+    d_val = dcf_calc(row.get("FCF_Yield"), row.get("MarketCap"), row.get("Price"), g_rate, d_rate, t_rate)
+
+    st.divider()
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Market Price", safe_fmt(row.get('Price'), prefix="$"))
+    m2.metric("Graham Fair Value", safe_fmt(g_val, prefix="$"))
+    m3.metric("DCF Intrinsic Value", safe_fmt(d_val, prefix="$"))
